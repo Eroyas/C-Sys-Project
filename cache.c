@@ -23,7 +23,22 @@
  */
 struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
                            size_t recordsz, unsigned nderef) {
-
+	struct Cache *pcache = malloc (sizeof(struct Cache *));
+	pcache->file = fic;
+	pcache->fp = fopen(fic, "r+"); // surement changer "r+" par "w+"
+	pcache->nblocks = nblocks;
+	pcache->nrecords = nrecords;
+	pcache->recordsz = recordsz;
+	pcache->blocksz = nrecords*recordsz;
+	pcache->instrument->n_reads = 0;
+	pcache->instrument->n_writes = 0;
+	pcache->instrument->n_hits = 0;
+	pcache->instrument->n_syncs = 0;
+	pcache->instrument->n_deref = 0;
+	pcache->pfree->malloc(sizeof(struct Cache_Block_Header *));
+	pcache->headers->malloc(sizeof(struct Cache_Block_Header *) * nblocks);
+	// Dans headers : différence entre ibfile et ibcache ?
+	// Struct Cache_flags
 }
 
 /* 
@@ -32,7 +47,9 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
  * cache.
  */
 int Cache_Close(struct Cache *pcache) {
-
+	Cache_Sync(*pcache);
+	fclose(pcache->fp);
+	free(pcache);
 }
 
 /* 
@@ -78,9 +95,11 @@ Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
 
 /* 
  * Récupère un pointeur sur une copie des statistiques courantes.
- * Il retourne une copie de la structure d'instruction du cache pointé pointé par
+ * Il retourne une copie de la structure d'instruction du cache pointé par
  * pcache.
  */
 struct Cache_Instrument *Cache_Get_Instrument(struct Cache *pcache) {
-
+	struct Cache_Instrument instrumentCopy = malloc(sizeof(struct Cache_Instrument));
+	instrumentCopy = pcache->instrument;
+	return (instrumentCopy);
 }
