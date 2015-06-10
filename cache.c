@@ -9,6 +9,9 @@
  */
 
 #include "cache.h"
+#include "low_cache.h"
+#include "strategy.h"
+
 
 /* 
  * Crée un cache associé au fichier de nom fic : la cache comporte nblocks, chaque
@@ -23,23 +26,23 @@
  */
 struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
                            size_t recordsz, unsigned nderef) {
-	struct Cache *pcache = malloc (sizeof(struct Cache *));
-	pcache->file = fic;
-	pcache->fp = fopen(fic, "r+"); // surement changer "r+" par "w+"
-	pcache->nblocks = nblocks;
-	pcache->nrecords = nrecords;
-	pcache->recordsz = recordsz;
-	pcache->blocksz = nrecords*recordsz;
-	pcache->instrument->n_reads = 0;
-	pcache->instrument->n_writes = 0;
-	pcache->instrument->n_hits = 0;
-	pcache->instrument->n_syncs = 0;
-	pcache->instrument->n_deref = 0;
-	pcache->pfree->malloc(sizeof(struct Cache_Block_Header *));
-	pcache->headers->malloc(sizeof(struct Cache_Block_Header *) * nblocks);
-	// Faire boucle pour initialiser chaque bloque
-	// Dans headers : différence entre ibfile et ibcache ?
-	// Struct Cache_Flag
+    struct Cache *pcache = malloc (sizeof(struct Cache *));
+    pcache->file = fic;
+    pcache->fp = fopen(fic, "r+"); // Surement changer "r+" par "w+"
+    pcache->nblocks = nblocks;
+    pcache->nrecords = nrecords;
+    pcache->recordsz = recordsz;
+    pcache->blocksz = nrecords*recordsz;
+    pcache->instrument->n_reads = 0;
+    pcache->instrument->n_writes = 0;
+    pcache->instrument->n_hits = 0;
+    pcache->instrument->n_syncs = 0;
+    pcache->instrument->n_deref = 0;
+    pcache->pfree->malloc(sizeof(struct Cache_Block_Header *));
+    pcache->headers->malloc(sizeof(struct Cache_Block_Header *) * nblocks);
+    // Faire boucle pour initialiser chaque bloque
+    // Dans headers : différence entre ibfile et ibcache ?
+    // Struct Cache_Flag
 }
 
 /* 
@@ -48,9 +51,9 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
  * cache.
  */
 int Cache_Close(struct Cache *pcache) {
-	Cache_Sync(*pcache);
-	fclose(pcache->fp);
-	free(pcache);
+    Cache_Sync(*pcache);
+    fclose(pcache->fp);
+    free(pcache);
 }
 
 /* 
@@ -71,10 +74,28 @@ Cache_Error Cache_Sync(struct Cache *pcache) {
  * d’enchainer  des tests différents sans avoir à réallouer le cache.
  */
 Cache_Error Cache_Invalidate(struct Cache *pcache) {
-	int max = pcache->nblocks;
-	for(int i = 0; i < max; i++){
-		pcache->headers[i]->flags &= ~0x2;
-	}
+    int max = pcache->nblocks;
+    for(int i = 0; i < max; i++) {
+        pcache->headers[i]->flags &= ~0x2;
+    }
+}
+
+/* 
+ * Retourne le bloc valide du cache sinon retourne Null
+ */
+struct Cache_Block_Header * BlockValidInCache(struct Cache *pcache, int irfile) {
+    
+    struct Cache_Block_Header * header;
+    
+    for(int i = 0 ; i < pcache->nblocks ; ++i) {
+        header = &pcache->headers[i];
+        
+        if(header->ibfile == irfile) {
+            return &header[i];
+        }
+    }
+
+    return NULL;
 }
 
 /* 
@@ -85,6 +106,36 @@ Cache_Error Cache_Invalidate(struct Cache *pcache) {
  */
 Cache_Error Cache_Read(struct Cache *pcache, int irfile, void *precord) {
 
+    struct Cache_Block_Header * header;
+
+    if((header = BlockValidInCache(pcache, irfile)) == NULL) { // Si le block n'est pas
+                                                               // dans le cache
+        // Bloc est récupéré par la stratégies
+        header = Strategy_Replace_Block(pcache);
+        
+        // Permet de placer le curseur à une position donnée pour réaliser un accès 
+        // direct dans un fichier. La nouvelle position sera decalée d'un nombre d'octets 
+        // égal au paramètre deplacement (deuxieme param) depuis le début du fichier (si
+        // reference, le derrnier param, vaut SEEK_SET (valant en fait 0))
+        // Le premier param est le pointeur vers le fichier en question.
+        if(fseek(pcache->fp, header->ibfile * pcache->blocksz, SEEK_SET) != 0) {
+            return CACHE_KO;
+        } 
+
+        // fputs écrit sur le fichier le contenu du tableau dont la fin est le caractère null.
+        // Le premier param pointe vers le tableau de caractères.
+        // Le deuxieme param pointe vers le fichier sur lequel se fait l'écriture.    
+        if(fputs((char *)pcache->fp, (FILE *)header->data) == EOF) {
+            return CACHE_KO;
+        }
+    }
+
+    if(fputs(header->data, (FILE *)precord) == EOF) {
+        return CACHE_KO;
+    }
+
+    Strategy_Read(pcache, header);
+    return CACHE_OK;
 }
 
 /* 
@@ -95,6 +146,27 @@ Cache_Error Cache_Read(struct Cache *pcache, int irfile, void *precord) {
  */
 Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
 
+    struct Cache_Block_Header * header;
+
+    if((header = BlockValidInCache(pcache, irfile)) == NULL) {
+        
+        header = Strategy_Replace_Block(pcache);
+
+        if(fseek(pcache->fp, header->ibfile * pcache->blocksz, SEEK_SET) != 0) {
+            return CACHE_KO;
+        } 
+
+        if(fputs((char *)pcache->fp, (FILE*)header->data) == EOF) {
+            return CACHE_KO;
+        }   
+    }
+
+    if(fputs((char *)precord, (FILE *)header->data) == EOF) {
+        return CACHE_KO;
+    } 
+
+    Strategy_Write(pcache, header);
+    return CACHE_OK;
 }
 
 /* 
@@ -103,7 +175,7 @@ Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
  * pcache.
  */
 struct Cache_Instrument *Cache_Get_Instrument(struct Cache *pcache) {
-	struct Cache_Instrument instrumentCopy = malloc(sizeof(struct Cache_Instrument));
-	instrumentCopy = pcache->instrument;
-	return (instrumentCopy);
+    struct Cache_Instrument instrumentCopy = malloc(sizeof(struct Cache_Instrument));
+    instrumentCopy = pcache->instrument;
+    return (instrumentCopy);
 }
