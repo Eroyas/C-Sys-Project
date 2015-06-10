@@ -21,8 +21,8 @@ struct Cache_Block_Header *Get_Free_Block(struct Cache *pcache)
 	for(i = 0;i<pcache->nblocks;i++){
 		//on stocke le bloc courant
 		headerCourant = &(pcache->headers[i]);
-		// si il n'est pas valide 
-		if (headerCourant->flags & VALID != 0x1)
+		// si il n'est pas valide (VALID != 1)
+		if (!(headerCourant->flags & VALID))
 			return headerCourant;
 	}
 	// le cache est plein
