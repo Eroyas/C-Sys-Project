@@ -59,7 +59,7 @@ struct Cache_Instrument
     unsigned n_reads; 	//!< Nombre de lectures.
     unsigned n_writes;	//!< Nombre d'écritures.
     unsigned n_hits;	//!< Nombre de fois où l'élément était déjà dans le cache.
-    unsigned n_syncs;	//<! Nombre d'appels à Cache_Sync().
+    unsigned n_syncs;	//!< Nombre d'appels à Cache_Sync().
     unsigned n_deref;	//!< Nombre de déréférençage (stratégie NUR).
 };
 

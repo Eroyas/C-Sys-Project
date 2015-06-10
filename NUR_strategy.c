@@ -11,166 +11,120 @@
 #include "strategy.h"
 #include "low_cache.h"
 
-/* Constantes
- * ----------
-*/
 
-/* Le flag indicant une référence. On utilisera directement le champ flags de la
- * Cache_Block_Header (voir low_cache.h)
-*/
-#define REFER 0x4
-
-/* Période de mise à zéro des bits de référence */
+// NDEREF est la période avec laquelle le bit R est remis à 0
 #define NDEREF 100
 
-/* Macros utiles
- * ------------- 
-*/
+ // Flag pour le bit de référence
+#define REFER 0x4
 
-/* Valeur de vérité d'un entier */
-#define BOOLVAL(v) ((v) ? 1 : 0)
-
-/* Prend 2 bits m et r et en fait un entier m*2 + r */  
-#define MAKE_RM(r, m) ((BOOLVAL(r)<<1) | BOOLVAL(m))
-
-/* Structure de données propre à la stratégie NUR */
+ /* Création d'une structure avec cptderf : le compteur de déférençage et 
+ nderef : période entre deux dérérençages*/
 struct NUR_Strategy
 {
-    unsigned nderef;    /* Période de déréférençage */
-    unsigned cptderef;  /* compteur */
+    unsigned nderef;
+    unsigned cptderef;
 };
-#define NUR_STRATEGY(pcache) ((struct NUR_Strategy *)(pcache)->pstrategy)
 
-/* Fonction définie plus loin */
-static void Dereference_If_Needed(struct Cache *pcache);
+ // Déréférencage
+static void Dereferencage(struct Cache *pcache)
+{
+    struct NUR_Strategy *pstrat = (struct NUR_Strategy *)(pcache)->pstrategy;
+    int ib;
 
-/* ------------------------------------------------------------------
- * Fonctions externes (utlisées par cache.c)
- * ------------------------------------------------------------------
- */
+    // Déférencement tous les deref accès
+    if (--pstrat->cptderef > 0){
+        return;
+    }
+    // Remise à zero de tous les bits de déférence
+    for (ib = 0; ib < pcache->nblocks; ib++){
+        pcache->headers[ib].flags &= ~REFER;
+    }
+    // Remise a 0 du compteur
+    pstrat->cptderef = pstrat->nderef;
+    // Incrémentation du compteur de déréférençage
+    ++pcache->instrument.n_deref;
+}
 
-/* initialisation de la stratégie
- * ------------------------------
- * On alloue une structure contenant le compteur de déréférençage (cptderf)
- * ainsi que la valeur maximale de ce dernier (nderef) qui constitue la
- * "période" de déréférençage.
-*/
+
+
+ // Initialisation de la stratégie.
 void *Strategy_Create(struct Cache *pcache) 
 {
-    struct NUR_Strategy *pstrat = malloc(sizeof(struct NUR_Strategy));
-
+    struct NUR_Strategy *pstrat = malloc(sizeof((struct NUR_Strategy *) pcache->pstrategy));
     pstrat->nderef = pcache->nderef;
     pstrat->cptderef = pcache->nderef;
-
     return pstrat;
 }
 
-/* Fermeture de la stratégie
- * -------------------------
- */
+// Calcul du nombre RM (RM=2*R+M)
+int calculateRM(int r, int m){
+    int rm = ((r) ? 1 : 0) << 1;
+    rm |= (m) ? 1 : 0;
+    return rm;
+}
+
+// Fermeture de la stratégie.
 void Strategy_Close(struct Cache *pcache)
 {
     free(pcache->pstrategy);
 }
 
-/* Invalidation du cache
- * ---------------------
- * On force la remise à zéro des bits de référence.
-*/
+// Invalidation du cache
 void Strategy_Invalidate(struct Cache *pcache) 
 {
-    struct NUR_Strategy *pstrat = NUR_STRATEGY(pcache);
-
-    if (pstrat->nderef != 0) 
-    {
+    struct NUR_Strategy *pstrat = (struct NUR_Strategy *)(pcache)->pstrategy;
+    // Si nderef est nul on ne déférence jamais
+    if (pstrat->nderef != 0) {
         pstrat->cptderef = 1;
-        Dereference_If_Needed(pcache);
+        Dereferencage(pcache);
     }   
 }
 
-/* Algorithme de remplacement de bloc
- * ---------------------------------- 
- * On prend le premier bloc invalide. S'il n'y en a plus on cherche un bloc non
- * référencé dans la dernière tranche de temps (et de préférence non modifié).
+ /* On cherche un bloc invilade, si il n'y en a pas on prend le bloc
+ donc le nombre RM calculé est le plus petit
  */
 struct Cache_Block_Header *Strategy_Replace_Block(struct Cache *pcache) 
 {
-    int ib;
-    int min;
-    struct Cache_Block_Header *pbh_save = NULL;
+    int i, rm;
+    int min = 10;
+
+    struct Cache_Block_Header *best_pbh = NULL;
     struct  Cache_Block_Header *pbh;
-    int rm;
-
-   /* On cherche d'abord un bloc invalide */
+   // Recherche d'un bloc invalide
     if ((pbh = Get_Free_Block(pcache)) != NULL) return pbh;
-
-    for (min = MAKE_RM(1, 1) + 1, ib = 0; ib < pcache->nblocks; ib++)
+    // Recherche du bloc avec le nombre RM le minimum
+    for (i = 0; i < pcache->nblocks; i++)
     {
-        pbh = &pcache->headers[ib];
-        
-        /* On construit un nombre binaire rm avec le bit de modification
-             * et le bit de référence, et on cherche le bloc avec la valeur de rm
-             * minimale */
-        rm = MAKE_RM(pbh->flags & REFER, pbh->flags & MODIF);
-
-        if (rm == 0) {
-            return pbh; /* pas la peine de cherche plus loin */
-        } else if (rm < min) {
+        pbh = &pcache->headers[i];
+        // Construction du nombre RM avec le bit de référence et le bit de modification (RM = 2*R+M)
+        rm = calculateRM(pbh->flags & REFER, pbh->flags & MODIF);
+        if (rm < min) {
             min = rm;
-            pbh_save = pbh;
+            best_pbh = pbh;
         }   
     }
-    
-    return pbh_save;    
+    return best_pbh;    
 }
 
-/* Fonctions "réflexes" en cas de lecture et d'écriture
- * ---------------------------------------------------- 
- * On se contente ici de déréférencer si besoin et surtout de marquer le bloc
- * comme ayant été référencé
- */
-void Strategy_Read(struct Cache *pcache, struct Cache_Block_Header *pbh) 
-{
-    Dereference_If_Needed(pcache);
-    pbh->flags |= REFER;
-} 
-  
+
+ // Si une lecture ou une ecriture est faite, on déréférence si il y a besoin et on met le bit R à 1
 void Strategy_Write(struct Cache *pcache, struct Cache_Block_Header *pbh)
 {
-    Dereference_If_Needed(pcache);
+    Dereferencage(pcache);
     pbh->flags |= REFER;
 } 
+void Strategy_Read(struct Cache *pcache, struct Cache_Block_Header *pbh) 
+{
+    Dereferencage(pcache);
+    pbh->flags |= REFER;
+}
 
-/* Identification de la stratégie
- * ------------------------------
- */
+//! Identification de la stratégie.
 char *Strategy_Name()
 {
     return "NUR";
 }
 
-/* ------------------------------------------------------------------
- * Fonctions purement locales (privées) à ce module
- * ------------------------------------------------------------------
- */
 
-/* Déréférençage si besoin
- * -----------------------
- * On remet à 0 le bit de référence tous les deref accès.
- */
-static void Dereference_If_Needed(struct Cache *pcache)
-{
-    struct NUR_Strategy *pstrat = NUR_STRATEGY(pcache);
-    int ib;
-
-    /* On déréférence tous les deref accès ; si deref est 0 on ne déréférence jamais */
-    if (pstrat->nderef == 0 || --pstrat->cptderef > 0) return;
-
-    /* C'est le moment : on remet à 0 tous les bits de déférence */
-    for (ib = 0; ib < pcache->nblocks; ib++) pcache->headers[ib].flags &= ~REFER;
-
-    /* On réarme le compteur et on met à jour l'instrumentation */
-    pstrat->cptderef = pstrat->nderef;
-    ++pcache->instrument.n_deref;
-}
 
