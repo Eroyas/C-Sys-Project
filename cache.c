@@ -37,8 +37,9 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
 	pcache->instrument->n_deref = 0;
 	pcache->pfree->malloc(sizeof(struct Cache_Block_Header *));
 	pcache->headers->malloc(sizeof(struct Cache_Block_Header *) * nblocks);
+	// Faire boucle pour initialiser chaque bloque
 	// Dans headers : différence entre ibfile et ibcache ?
-	// Struct Cache_flags
+	// Struct Cache_Flag
 }
 
 /* 
@@ -67,10 +68,13 @@ Cache_Error Cache_Sync(struct Cache *pcache) {
  * comme si le cache était vide : aucun bloc ne contient plus d’information utile.
  * Noter que cette fonction ne devrait pas faire partie de l’interface utilisateur 
  * du cache. Néanmoins, elle est nécessaire au simulateur, puisqu’elle permet
- * d’enchainer des tests différents sans avoir à réallouer le cache.
+ * d’enchainer  des tests différents sans avoir à réallouer le cache.
  */
 Cache_Error Cache_Invalidate(struct Cache *pcache) {
-
+	int max = pcache->nblocks;
+	for(int i = 0; i < max; i++){
+		pcache->headers[i]->flags &= ~0x2;
+	}
 }
 
 /* 
