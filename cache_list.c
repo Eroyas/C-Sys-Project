@@ -1,7 +1,10 @@
+
 #include "cache_list.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <assert.h>
+
 
 struct Cache_List *Cache_List_Create(){
 	
@@ -73,6 +76,8 @@ struct Cache_Block_Header *Cache_List_Remove_First(struct Cache_List *list){
 
 	plast->next = pcurr;
 	pcurr->prev = plast;
+	
+	return pcurr->pheader;
 }
 
 struct Cache_Block_Header *Cache_List_Remove_Last(struct Cache_List *list){
@@ -86,6 +91,8 @@ struct Cache_Block_Header *Cache_List_Remove_Last(struct Cache_List *list){
 	
 	plast->next = pcurr;
 	pcurr->prev = plast;
+	
+	return pcurr->pheader;
 }
 
 struct Cache_Block_Header *Cache_List_Remove(struct Cache_List *list, struct Cache_Block_Header *pbh){
@@ -101,6 +108,7 @@ struct Cache_Block_Header *Cache_List_Remove(struct Cache_List *list, struct Cac
 			pcurr->prev = plast;
 	    	}			
 	}	
+	return pcurr->pheader;
 }
 
 void Cache_List_Clear(struct Cache_List *list){
@@ -118,8 +126,7 @@ void Cache_List_Clear(struct Cache_List *list){
 bool Cache_List_Is_Empty(struct Cache_List *list){
 	bool res = false;
 	
-	struct Cache_List *pcurr = NULL;
-	if ( list->next == NULL){
+	if ( list->next == NULL ){
 		res = true;
 	}
 	
@@ -168,6 +175,7 @@ void Cache_List_Move_To_Begin(struct Cache_List *list,struct Cache_Block_Header 
 	
 	struct Cache_List *pnew = NULL;
 	pcurr = NULL;
+	pcurr = list->next;
 	
 	pnew = malloc(sizeof(struct Cache_List));    
 	pnew->pheader = pbh;
@@ -178,3 +186,4 @@ void Cache_List_Move_To_Begin(struct Cache_List *list,struct Cache_Block_Header 
 	pcurr->prev = pnew;
 	pnew->next = pcurr;
 }
+
