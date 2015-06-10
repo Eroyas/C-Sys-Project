@@ -9,6 +9,7 @@
  */
 
 #include "cache.h"
+#include "low_cache.h"
 
 /* 
  * Crée un cache associé au fichier de nom fic : la cache comporte nblocks, chaque
@@ -35,11 +36,15 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
 	pcache->instrument->n_hits = 0;
 	pcache->instrument->n_syncs = 0;
 	pcache->instrument->n_deref = 0;
+	pcache->pstrategy = NULL;
 	pcache->pfree->malloc(sizeof(struct Cache_Block_Header *));
 	pcache->headers->malloc(sizeof(struct Cache_Block_Header *) * nblocks);
-	// Faire boucle pour initialiser chaque bloque
-	// Dans headers : différence entre ibfile et ibcache ?
-	// Struct Cache_Flag
+	for(int i = 0; i < nblocks; i++){
+		pcache->headers[i]->flags = 0x0;
+		pcache->headers[i]->ibfile = -1;
+		pcache->headers[i]->ibcache = i;
+		pcache->headers[i]->data = malloc(blocksz);
+	}
 }
 
 /* 
@@ -48,7 +53,7 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
  * cache.
  */
 int Cache_Close(struct Cache *pcache) {
-	Cache_Sync(*pcache);
+	Cache_Sync(pcache);
 	fclose(pcache->fp);
 	free(pcache);
 }
@@ -60,7 +65,29 @@ int Cache_Close(struct Cache *pcache) {
  * NSYNC accès (par défaut NSYNC vaut 1000, défini dans low_cache.c).
  */
 Cache_Error Cache_Sync(struct Cache *pcache) {
+	// Incrémentation du compteur de synchronisation
+	pcache->instrument.n_syncs++;
 
+	// On parcour tous les blocks.
+	for(int i = 0; i < pcache->nblocks; i++){
+		// Si le bloc à dans son flag le bit de modif à 1 alors on copie le bloc dans le fichier.
+		if((pcache->headers[i].flags & MODIF) != 0){
+			// On se décale dans le fichier à l'endroit où effectuer la modification.
+			// Si le dacalage n'a pas marché, on retourne le code d'erreur.
+			if(fseek(pcache->fp, pcache->headers[i].ibfile * pcache->blocksz, SEEK_SET) != 0){
+				return CACHE_KO;
+			}
+			// On remplace donc les données du fichier par celle du bloc.
+			// Si le remplacement n'a pas marché, on retourne le code d'erreur.
+			if(fputs(pcache->headers[i].data, pcache->fp) == EOF)){
+				return CACHE_KO;
+			}
+			// Si tout à marché, on remet donc le bit de modifaction à 0
+			pcache->headers[i].flags &= ~MODIF;
+		}
+	}
+	// On retourne ensuite le code de réussite.
+	return CACHE_OK;
 }
 
 /* 
@@ -73,7 +100,7 @@ Cache_Error Cache_Sync(struct Cache *pcache) {
 Cache_Error Cache_Invalidate(struct Cache *pcache) {
 	int max = pcache->nblocks;
 	for(int i = 0; i < max; i++){
-		pcache->headers[i]->flags &= ~0x2;
+		pcache->headers[i]->flags &= ~VALID;
 	}
 }
 
@@ -101,9 +128,16 @@ Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
  * Récupère un pointeur sur une copie des statistiques courantes.
  * Il retourne une copie de la structure d'instruction du cache pointé par
  * pcache.
+ *Attention : tous les compteurs de la structure courante sont remis à 0 par cette
+ *fonction.
  */
 struct Cache_Instrument *Cache_Get_Instrument(struct Cache *pcache) {
-	struct Cache_Instrument instrumentCopy = malloc(sizeof(struct Cache_Instrument));
-	instrumentCopy = pcache->instrument;
+	struct Cache_Instrument *instrumentCopy = malloc(sizeof(struct Cache_Instrument));
+	*instrumentCopy = pcache->instrument;
+	pcache->instrument->n_reads = 0;
+	pcache->instrument->n_writes = 0;
+	pcache->instrument->n_hits = 0;
+	pcache->instrument->n_syncs = 0;
+	pcache->instrument->n_deref = 0;
 	return (instrumentCopy);
 }
