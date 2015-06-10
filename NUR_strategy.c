@@ -11,19 +11,19 @@
 #include "strategy.h"
 #include "low_cache.h"
 
- // Flag pour le bit de référence
-#define REFER 0x4
 
 // NDEREF est la période avec laquelle le bit R est remis à 0
 #define NDEREF 100
 
+ // Flag pour le bit de référence
+#define REFER 0x4
 
  /* Création d'une structure avec cptderf : le compteur de déférençage et 
  nderef : période entre deux dérérençages*/
 struct NUR_Strategy
 {
-    unsigned nderef;    /* Période de déréférençage */
-    unsigned cptderef;  /* compteur */
+    unsigned nderef;
+    unsigned cptderef;
 };
 
  // Déréférencage
@@ -81,7 +81,7 @@ void Strategy_Invalidate(struct Cache *pcache)
     }   
 }
 
- /* On cherche un bloc invilade, si il n'y en a pas pas on prend le bloc
+ /* On cherche un bloc invilade, si il n'y en a pas on prend le bloc
  donc le nombre RM calculé est le plus petit
  */
 struct Cache_Block_Header *Strategy_Replace_Block(struct Cache *pcache) 
@@ -109,17 +109,16 @@ struct Cache_Block_Header *Strategy_Replace_Block(struct Cache *pcache)
 
 
  // Si une lecture ou une ecriture est faite, on déréférence si il y a besoin et on met le bit R à 1
-void Strategy_Read(struct Cache *pcache, struct Cache_Block_Header *pbh) 
-{
-    Dereferencage(pcache);
-    pbh->flags |= REFER;
-} 
-  
 void Strategy_Write(struct Cache *pcache, struct Cache_Block_Header *pbh)
 {
     Dereferencage(pcache);
     pbh->flags |= REFER;
 } 
+void Strategy_Read(struct Cache *pcache, struct Cache_Block_Header *pbh) 
+{
+    Dereferencage(pcache);
+    pbh->flags |= REFER;
+}
 
 //! Identification de la stratégie.
 char *Strategy_Name()
