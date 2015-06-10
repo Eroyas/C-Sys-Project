@@ -203,6 +203,7 @@ static void Test_1()
     if (!Cache_Invalidate(The_Cache)) Error("Test_1 : Cache_Invalidate");
 
     if (!Cache_Write(The_Cache, 0, &temp)) Error("Test_1 : Cache_Write(0)");
+    printf("salut dsfd \n\n");
     for (ind = 1; ind < N_Records_in_File; ind++)
     {
         temp.i = ind;

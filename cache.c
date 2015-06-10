@@ -11,6 +11,7 @@
 #include "cache.h"
 #include "low_cache.h"
 #include "strategy.h"
+ #include <string.h>
 
 /* 
  * Crée un cache associé au fichier de nom fic : la cache comporte nblocks, chaque
@@ -26,27 +27,28 @@
 struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
                            size_t recordsz, unsigned nderef) {
 
-    struct Cache *pcache = malloc (sizeof(struct Cache *));
-    pcache->file = fic;
+    struct Cache *pcache = malloc (sizeof(struct Cache));
+    pcache->file = strdup(fic);
     pcache->fp = fopen(fic, "r+"); // surement changer "r+" par "w+"
     pcache->nblocks = nblocks;
     pcache->nrecords = nrecords;
     pcache->recordsz = recordsz;
     pcache->blocksz = nrecords*recordsz;
-    pcache->instrument->n_reads = 0;
-    pcache->instrument->n_writes = 0;
-    pcache->instrument->n_hits = 0;
-    pcache->instrument->n_syncs = 0;
-    pcache->instrument->n_deref = 0;
+    pcache->instrument.n_reads = 0;
+    pcache->instrument.n_writes = 0;
+    pcache->instrument.n_hits = 0;
+    pcache->instrument.n_syncs = 0;
+    pcache->instrument.n_deref = 0;
     pcache->pstrategy = NULL;
-    pcache->pfree->malloc(sizeof(struct Cache_Block_Header *));
-    pcache->headers->malloc(sizeof(struct Cache_Block_Header *) * nblocks);
+    pcache->headers = malloc(sizeof(struct Cache_Block_Header) * nblocks);
     for(int i = 0; i < nblocks; i++){
-        pcache->headers[i]->flags = 0x0;
-        pcache->headers[i]->ibfile = -1;
-        pcache->headers[i]->ibcache = i;
-        pcache->headers[i]->data = malloc(blocksz);
+        pcache->headers[i].flags = 0x0;
+        pcache->headers[i].ibfile = -1;
+        pcache->headers[i].ibcache = i;
+        pcache->headers[i].data = malloc(pcache->blocksz);
     }
+    pcache->pfree = Get_Free_Block(pcache);
+    return pcache;
 }
 
 /* 
@@ -54,12 +56,16 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
  * Cache_Sync(), ferme le fichier et détruit toutes les structures de données du 
  * cache.
  */
-int Cache_Close(struct Cache *pcache) {
+Cache_Error Cache_Close(struct Cache *pcache) {
 
-    Cache_Sync(pcache);
-    fclose(pcache->fp);
+    if (Cache_Sync(pcache) == CACHE_KO) return CACHE_KO;
+    if  (fclose(pcache->fp) != 0) return CACHE_KO;
+    for (int i = 0; i<pcache->nblocks; i++)
+    	free(pcache->headers[i].data);
+    free(pcache->headers);
     free(pcache);
-
+    printf("salut 2");
+    return CACHE_OK;
 }
 
 /* 
@@ -83,7 +89,7 @@ Cache_Error Cache_Sync(struct Cache *pcache) {
             }
             // On remplace donc les données du fichier par celle du bloc.
             // Si le remplacement n'a pas marché, on retourne le code d'erreur.
-            if(fputs(pcache->headers[i].data, pcache->fp) == EOF)){
+            if(fputs(pcache->headers[i].data, pcache->fp) == EOF){
                 return CACHE_KO;
             }
             // Si tout à marché, on remet donc le bit de modifaction à 0
@@ -105,9 +111,9 @@ Cache_Error Cache_Invalidate(struct Cache *pcache) {
 
     int max = pcache->nblocks;
     for(int i = 0; i < max; i++){
-        pcache->headers[i]->flags &= ~VALID;
+        pcache->headers[i].flags &= ~VALID;
     }
-
+    return CACHE_OK;
 }
 
 /* 
@@ -182,7 +188,7 @@ Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
         
         header = Strategy_Replace_Block(pcache);
 
-        if(fseek(pcache->fp, header->ibfile * pcache->blocksz, SEEK_SET) != 0) {
+        if(fseek(pcache->fp, (header->ibfile) * (int)(pcache->blocksz), SEEK_SET) != 0) {
             return CACHE_KO;
         } 
 
@@ -210,10 +216,10 @@ struct Cache_Instrument *Cache_Get_Instrument(struct Cache *pcache) {
 
     struct Cache_Instrument *instrumentCopy = malloc(sizeof(struct Cache_Instrument));
     *instrumentCopy = pcache->instrument;
-    pcache->instrument->n_reads = 0;
-    pcache->instrument->n_writes = 0;
-    pcache->instrument->n_hits = 0;
-    pcache->instrument->n_syncs = 0;
-    pcache->instrument->n_deref = 0;
+    pcache->instrument.n_reads = 0;
+    pcache->instrument.n_writes = 0;
+    pcache->instrument.n_hits = 0;
+    pcache->instrument.n_syncs = 0;
+    pcache->instrument.n_deref = 0;
     return (instrumentCopy);
 }

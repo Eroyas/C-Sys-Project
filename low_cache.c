@@ -16,14 +16,11 @@ l’utilisation d’un bloc valide.*/
 struct Cache_Block_Header *Get_Free_Block(struct Cache *pcache)
 {
 	unsigned int i;
-	struct Cache_Block_Header *headerCourant;
 	// on parcourt tous les blocs du cache
 	for(i = 0;i<pcache->nblocks;i++){
-		//on stocke le bloc courant
-		headerCourant = &(pcache->headers[i]);
 		// si il n'est pas valide 
-		if (headerCourant->flags & VALID != 0x1)
-			return headerCourant;
+		if ((pcache->headers[i].flags & VALID) != 0x1)
+			return &(pcache->headers[i]);
 	}
 	// le cache est plein
 	return NULL;
