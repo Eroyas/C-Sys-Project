@@ -12,6 +12,11 @@
 #include "low_cache.h"
 #include "strategy.h"
 #include <string.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <assert.h>
+ 
+
 
  int cptNSYNC;
 
@@ -29,27 +34,35 @@
 struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
                            size_t recordsz, unsigned nderef) {
 
-    struct Cache *pcache = malloc (sizeof(struct Cache));
-    pcache->file = strdup(fic);
-    pcache->fp = fopen(fic, "r+"); // surement changer "r+" par "w+"
+    struct Cache *pcache = (struct Cache *) malloc (sizeof(struct Cache));
+    pcache->file = malloc(strlen(fic)+1);
+    strcpy(pcache->file, fic);
+    pcache->fp = fopen(fic, "w+");
+
     pcache->nblocks = nblocks;
     pcache->nrecords = nrecords;
     pcache->recordsz = recordsz;
     pcache->blocksz = nrecords*recordsz;
+    pcache->nderef = nderef;
+
+    pcache->pstrategy = Strategy_Create(pcache);
+    pcache->headers = malloc(sizeof(struct Cache_Block_Header) * nblocks);
+    for(int i = 0; i < nblocks; i++){
+        pcache->headers[i].flags = 0x0;
+        pcache->headers[i].ibfile = 0;
+        pcache->headers[i].ibcache = i;
+        pcache->headers[i].data = malloc(pcache->blocksz);
+    }
+    pcache->pfree = pcache->headers;
+
     pcache->instrument.n_reads = 0;
     pcache->instrument.n_writes = 0;
     pcache->instrument.n_hits = 0;
     pcache->instrument.n_syncs = 0;
     pcache->instrument.n_deref = 0;
-    pcache->pstrategy = NULL;
-    pcache->headers = malloc(sizeof(struct Cache_Block_Header) * nblocks);
-    for(int i = 0; i < nblocks; i++){
-        pcache->headers[i].flags = 0x0;
-        pcache->headers[i].ibfile = -1;
-        pcache->headers[i].ibcache = i;
-        pcache->headers[i].data = malloc(pcache->blocksz);
-    }
-    pcache->pfree = Get_Free_Block(pcache);
+    
+    cptNSYNC = 0;
+    printf("create\n\n");
     return pcache;
 }
 
@@ -61,12 +74,14 @@ struct Cache *Cache_Create(const char *fic, unsigned nblocks, unsigned nrecords,
 Cache_Error Cache_Close(struct Cache *pcache) {
 
     if (Cache_Sync(pcache) == CACHE_KO) return CACHE_KO;
+    Strategy_Close(pcache);
     if  (fclose(pcache->fp) != 0) return CACHE_KO;
     for (int i = 0; i<pcache->nblocks; i++)
     	free(pcache->headers[i].data);
     free(pcache->headers);
+    free(pcache->file);
     free(pcache);
-    printf("salut 2");
+    printf("close\n\n");
     return CACHE_OK;
 }
 
@@ -77,27 +92,29 @@ Cache_Error Cache_Close(struct Cache *pcache) {
  * NSYNC accès (par défaut NSYNC vaut 1000, défini dans low_cache.c).
  */
 Cache_Error Cache_Sync(struct Cache *pcache) {
-    // Incrémentation du compteur de synchronisation
-    pcache->instrument.n_syncs++;
 
     // On parcour tous les blocks.
     for(int i = 0; i < pcache->nblocks; i++){
         // Si le bloc à dans son flag le bit de modif à 1 alors on copie le bloc dans le fichier.
-        if((pcache->headers[i].flags & MODIF) != 0){
+        if((pcache->headers[i].flags & (MODIF|VALID)) != 0){
             // On se décale dans le fichier à l'endroit où effectuer la modification.
             // Si le dacalage n'a pas marché, on retourne le code d'erreur.
-            if(fseek(pcache->fp, pcache->headers[i].ibfile * pcache->blocksz, SEEK_SET) != 0){
+            if(fseek(pcache->fp, DADDR(pcache, pcache->headers[i].ibfile), SEEK_SET) != 0){
                 return CACHE_KO;
             }
             // On remplace donc les données du fichier par celle du bloc.
             // Si le remplacement n'a pas marché, on retourne le code d'erreur.
-            if(fputs(pcache->headers[i].data, pcache->fp) == EOF){
+            if(fwrite(pcache->headers[i].data, 1, pcache->blocksz, pcache->fp) != pcache->blocksz){
                 return CACHE_KO;
             }
             // Si tout à marché, on remet donc le bit de modifaction à 0
             pcache->headers[i].flags &= ~MODIF;
         }
     }
+    // Incrémentation du compteur de synchronisation
+    pcache->instrument.n_syncs++;
+    cptNSYNC = 0;
+    printf("sync\n\n");
     // On retourne ensuite le code de réussite.
     return CACHE_OK;
 }
@@ -115,6 +132,9 @@ Cache_Error Cache_Invalidate(struct Cache *pcache) {
     for(int i = 0; i < max; i++){
         pcache->headers[i].flags &= ~VALID;
     }
+   	pcache->pfree = pcache->headers;
+   	Strategy_Invalidate(pcache); 
+   	printf("invalidate\n\n");	
     return CACHE_OK;
 }
 
@@ -127,12 +147,47 @@ struct Cache_Block_Header * BlockValidInCache(struct Cache *pcache, int irfile) 
 
     for(int i = 0 ; i < pcache->nblocks ; ++i) {
         if(pcache->headers[i].flags & VALID) {
-            if(pcache->headers[i].ibfile == ibSearch)
+            if(pcache->headers[i].ibfile == ibSearch){
+            	printf("///////////////////////////////////////////////////////\n");
+                pcache->instrument.n_hits++;
                 return &(pcache->headers[i]);
+            }
         }
     }
+    printf("block valid in cache\n\n");
 
     return NULL;
+}
+
+Cache_Error WriteInBlock(struct Cache *pcache, struct Cache_Block_Header *header){
+	
+	if (fseek(pcache->fp, DADDR(pcache, header->ibfile), SEEK_SET) != 0)
+        return CACHE_KO;
+    if(fwrite(header->data, 1, pcache->blocksz, pcache->fp) != pcache->blocksz)
+        return CACHE_KO;
+    header->flags &= ~MODIF; // mets le flag de modification
+    printf("write in block\n\n");
+	return CACHE_OK;
+}
+
+Cache_Error ReadInBlock(struct Cache *pcache, struct Cache_Block_Header *header){
+	if(fseek(pcache->fp, 0, SEEK_END)<0){
+		return CACHE_KO;
+	}
+	if(DADDR(pcache, header->ibfile)>=ftell(pcache->fp)){
+		memset(header->data, '\0', pcache->blocksz);
+	} else {
+		if (fseek(pcache->fp, DADDR(pcache, header->ibfile), SEEK_SET) != 0){
+       		return CACHE_KO;
+		}
+   		if(fread(header->data, 1, pcache->blocksz, pcache->fp) != pcache->blocksz){
+     	    return CACHE_KO;
+    	}
+	}
+    header->flags |= VALID; // n'est plus free
+    printf("rread in block\n\n");
+    return CACHE_OK;
+
 }
 
 /* 
@@ -143,44 +198,39 @@ struct Cache_Block_Header * BlockValidInCache(struct Cache *pcache, int irfile) 
  */
 Cache_Error Cache_Read(struct Cache *pcache, int irfile, void *precord) {
 
-    struct Cache_Block_Header *header = BlockValidInCache(pcache, irfile);
-    
+    // +1 au nombre de lecture
+    pcache->instrument.n_reads++;
+        struct Cache_Block_Header *header = BlockValidInCache(pcache, irfile);
+        printf("test0\n\n");
     // Si le block n'est pas dans le cache
     if(header == NULL) {
         // Bloc est récupéré par la stratégies
         header = Strategy_Replace_Block(pcache);
-        header->ibfile = irfile / pcache->nrecords;
-
-        // Permet de placer le curseur à une position donnée pour réaliser un accès 
-        // direct dans un fichier. La nouvelle position sera decalée d'un nombre d'octets 
-        // égal au paramètre deplacement (deuxieme param) depuis le début du fichier (si
-        // reference, le derrnier param, vaut SEEK_SET (valant en fait 0))
-        // Le premier param est le pointeur vers le fichier en question.
-        if(fseek(pcache->fp, DADDR(pcache, header->ibfile), SEEK_SET) != 0) {
-            return CACHE_KO;
-        }
-
-        if(fgets(header->data, pcache->blocksz, pcache->fp) == EOF) {
-            return CACHE_KO;
-        }
-
+     	printf("test 1\n\n");
         // MAJ des flags
-        header->flags |= VALID; // n'est plus free
-        header->flags &= ~MODIF; // mets le flag de modification
-    } else {
-        // l'élément est dans le cache
-        pcache->instrument.n_hits++;
+        if((header->flags & VALID) && (header->flags & MODIF) && WriteInBlock(pcache, header) != CACHE_OK){
+        	return CACHE_KO;
+        }
+        printf("test 2\n\n");
+        header->flags = 0;
+        header->ibfile = irfile / pcache->nrecords;
+        if(ReadInBlock(pcache, header) != CACHE_OK)
+        	return CACHE_KO;
+        printf("test 3\n\n");
+        if(header== NULL)
+        	return CACHE_KO;
     }
+    printf("test 4\n\n");
     // on copie dans le buffer
     memcpy(precord, ADDR(pcache, irfile, header) , pcache->recordsz);
-    // +1 au nombre de lecture
-    pcache->instrument.n_reads++;
 
     if(++cptNSYNC == NSYNC) {
+    	printf("synchro\n\n");
         Cache_Sync(pcache);
     }
     
     Strategy_Read(pcache, header);
+    printf("cache read\n\n");
 
     return CACHE_OK;
 }
@@ -193,38 +243,31 @@ Cache_Error Cache_Read(struct Cache *pcache, int irfile, void *precord) {
  */
 Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
 
+    // +1 au nombre d'écriture
+    pcache->instrument.n_writes++;
     struct Cache_Block_Header * header = BlockValidInCache(pcache, irfile);
     
     // si le block n'est pas dans le cache
     if(header == NULL) {
-        header = Strategy_Replace_Block(pcache);
-        pcache->pfree = Get_Free_Block(pcache);
+        header = Strategy_Replace_Block(pcache); // MAJ des flags
+        if((header->flags & VALID) && (header->flags & MODIF) && WriteInBlock(pcache, header) != CACHE_OK){
+        	return CACHE_KO;
+        }
+        header->flags = 0;
         header->ibfile = irfile / pcache->nrecords;
-
-        if(fseek(pcache->fp, DADDR(pcache, header->ibfile), SEEK_SET) != 0) {
-            return CACHE_KO;
+        if(ReadInBlock(pcache, header) != CACHE_OK){
+        	return CACHE_KO;
         }
 
-        if(fgets(header->data, pcache->blocksz, pcache->fp) == EOF) {
-            return CACHE_KO;
+        if(header== NULL){
+        	return CACHE_KO;
         }
-
-        // MAJ des flags
-        header->flags |= VALID; // n'est plus free
-        header->flags &= ~MODIF; // mets le flag de modification
-    } else {
-        // l'élement est dans le cache
-        pcache->instrument.n_hits++;
     }
-
     // on copie dans le bloc
     // if(fgets((char *)ADDR(pcache, irfile, header), pcache->recordsz, precord)== EOF) return CACHE_KO;
     memcpy(ADDR(pcache, irfile, header), precord, pcache->recordsz);
 
     header->flags |= MODIF;
-    // +1 au nombre d'écriture
-    pcache->instrument.n_writes++;
-    Cache_Sync(pcache);
 
     if(++cptNSYNC == NSYNC) {
         Cache_Sync(pcache);
@@ -232,6 +275,7 @@ Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
 
     Strategy_Write(pcache, header);
 
+    printf("cache write\n\n");
     return CACHE_OK;
 }
 
@@ -244,12 +288,13 @@ Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
  */
 struct Cache_Instrument *Cache_Get_Instrument(struct Cache *pcache) {
 
-    struct Cache_Instrument *instrumentCopy = malloc(sizeof(struct Cache_Instrument));
-    *instrumentCopy = pcache->instrument;
+    static struct Cache_Instrument instrumentCopy;
+    instrumentCopy = pcache->instrument;
     pcache->instrument.n_reads = 0;
     pcache->instrument.n_writes = 0;
     pcache->instrument.n_hits = 0;
     pcache->instrument.n_syncs = 0;
     pcache->instrument.n_deref = 0;
-    return (instrumentCopy);
+    printf("cache instrument\n\n");
+    return &instrumentCopy;	
 }

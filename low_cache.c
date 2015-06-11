@@ -19,7 +19,7 @@ struct Cache_Block_Header *Get_Free_Block(struct Cache *pcache)
 	// on parcourt tous les blocs du cache
 	for(i = 0;i<pcache->nblocks;i++) {
 		// si il n'est pas valide 
-		if ((pcache->headers[i].flags & VALID) != 0x1)
+		if ((pcache->headers[i].flags & VALID) == 0x0)
 			return &(pcache->headers[i]);
 	}
 	// le cache est plein
