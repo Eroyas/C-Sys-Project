@@ -11,7 +11,9 @@
 #include "cache.h"
 #include "low_cache.h"
 #include "strategy.h"
- #include <string.h>
+#include <string.h>
+
+ int cptNSYNC;
 
 /* 
  * Crée un cache associé au fichier de nom fic : la cache comporte nblocks, chaque
@@ -121,13 +123,12 @@ Cache_Error Cache_Invalidate(struct Cache *pcache) {
  */
 struct Cache_Block_Header * BlockValidInCache(struct Cache *pcache, int irfile) {
     
-    struct Cache_Block_Header * header;
-    
+    int ibSearch = irfile / pcache->nrecords;
+
     for(int i = 0 ; i < pcache->nblocks ; ++i) {
-        header = &pcache->headers[i];
-        
-        if(header->ibfile == irfile) {
-            return &header[i];
+        if(pcache->headers[i].flags & VALID) {
+            if(pcache->headers[i].ibfile == ibSearch)
+                return &(pcache->headers[i]);
         }
     }
 
@@ -142,35 +143,45 @@ struct Cache_Block_Header * BlockValidInCache(struct Cache *pcache, int irfile) 
  */
 Cache_Error Cache_Read(struct Cache *pcache, int irfile, void *precord) {
 
-    struct Cache_Block_Header * header;
-
-    if((header = BlockValidInCache(pcache, irfile)) == NULL) { // Si le block n'est pas
-                                                               // dans le cache
+    struct Cache_Block_Header *header = BlockValidInCache(pcache, irfile);
+    
+    // Si le block n'est pas dans le cache
+    if(header == NULL) {
         // Bloc est récupéré par la stratégies
         header = Strategy_Replace_Block(pcache);
-        
+        header->ibfile = irfile / pcache->nrecords;
+
         // Permet de placer le curseur à une position donnée pour réaliser un accès 
         // direct dans un fichier. La nouvelle position sera decalée d'un nombre d'octets 
         // égal au paramètre deplacement (deuxieme param) depuis le début du fichier (si
         // reference, le derrnier param, vaut SEEK_SET (valant en fait 0))
         // Le premier param est le pointeur vers le fichier en question.
-        if(fseek(pcache->fp, header->ibfile * pcache->blocksz, SEEK_SET) != 0) {
-            return CACHE_KO;
-        } 
-
-        // fputs écrit sur le fichier le contenu du tableau dont la fin est le caractère null.
-        // Le premier param pointe vers le tableau de caractères.
-        // Le deuxieme param pointe vers le fichier sur lequel se fait l'écriture.    
-        if(fputs((char *)pcache->fp, (FILE *)header->data) == EOF) {
+        if(fseek(pcache->fp, DADDR(pcache, header->ibfile), SEEK_SET) != 0) {
             return CACHE_KO;
         }
-    }
 
-    if(fputs(header->data, (FILE *)precord) == EOF) {
-        return CACHE_KO;
-    }
+        if(fgets(header->data, pcache->blocksz, pcache->fp) == EOF) {
+            return CACHE_KO;
+        }
 
+        // MAJ des flags
+        header->flags |= VALID; // n'est plus free
+        header->flags &= ~MODIF; // mets le flag de modification
+    } else {
+        // l'élément est dans le cache
+        pcache->instrument.n_hits++;
+    }
+    // on copie dans le buffer
+    memcpy(precord, ADDR(pcache, irfile, header) , pcache->recordsz);
+    // +1 au nombre de lecture
+    pcache->instrument.n_reads++;
+
+    if(++cptNSYNC == NSYNC) {
+        Cache_Sync(pcache);
+    }
+    
     Strategy_Read(pcache, header);
+
     return CACHE_OK;
 }
 
@@ -182,26 +193,45 @@ Cache_Error Cache_Read(struct Cache *pcache, int irfile, void *precord) {
  */
 Cache_Error Cache_Write(struct Cache *pcache, int irfile, const void *precord) {
 
-    struct Cache_Block_Header * header;
-
-    if((header = BlockValidInCache(pcache, irfile)) == NULL) {
-        
+    struct Cache_Block_Header * header = BlockValidInCache(pcache, irfile);
+    
+    // si le block n'est pas dans le cache
+    if(header == NULL) {
         header = Strategy_Replace_Block(pcache);
+        pcache->pfree = Get_Free_Block(pcache);
+        header->ibfile = irfile / pcache->nrecords;
 
-        if(fseek(pcache->fp, (header->ibfile) * (int)(pcache->blocksz), SEEK_SET) != 0) {
+        if(fseek(pcache->fp, DADDR(pcache, header->ibfile), SEEK_SET) != 0) {
             return CACHE_KO;
-        } 
+        }
 
-        if(fputs((char *)pcache->fp, (FILE*)header->data) == EOF) {
+        if(fgets(header->data, pcache->blocksz, pcache->fp) == EOF) {
             return CACHE_KO;
-        }   
+        }
+
+        // MAJ des flags
+        header->flags |= VALID; // n'est plus free
+        header->flags &= ~MODIF; // mets le flag de modification
+    } else {
+        // l'élement est dans le cache
+        pcache->instrument.n_hits++;
     }
 
-    if(fputs((char *)precord, (FILE *)header->data) == EOF) {
-        return CACHE_KO;
-    } 
+    // on copie dans le bloc
+    // if(fgets((char *)ADDR(pcache, irfile, header), pcache->recordsz, precord)== EOF) return CACHE_KO;
+    memcpy(ADDR(pcache, irfile, header), precord, pcache->recordsz);
+
+    header->flags |= MODIF;
+    // +1 au nombre d'écriture
+    pcache->instrument.n_writes++;
+    Cache_Sync(pcache);
+
+    if(++cptNSYNC == NSYNC) {
+        Cache_Sync(pcache);
+    }
 
     Strategy_Write(pcache, header);
+
     return CACHE_OK;
 }
 
