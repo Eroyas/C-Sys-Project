@@ -1,8 +1,8 @@
 /*!
  *
- * \file : low_cache.c
+ * \file : cache.c
  *
- * \brief : Structures de données pour l'implémentation du cache.
+ * \brief : Gestion générale du cache.
  * 
  * \author : Yasin EROGLU - Jonathan BOUDAB - Ugo EL KOUBI - Théo DONZELLE
  *
@@ -215,8 +215,6 @@ Cache_Error WriteInBlock(struct Cache *pcache, struct Cache_Block_Header *header
 }
 
 Cache_Error ReadInBlock(struct Cache *pcache, struct Cache_Block_Header *header) {
-    
-    // ######################### ???
 
     // Recherche la longueur du fichier
     if(fseek(pcache->fp, 0, SEEK_END) < 0) {
